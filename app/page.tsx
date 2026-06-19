@@ -1,11 +1,31 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, Clock3, Search, ShieldCheck, Sparkles } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  Clock3,
+  Search,
+  ShieldCheck,
+  Sparkles
+} from "lucide-react";
 
 type RedeemState = "idle" | "loading" | "success" | "error";
 type Mode = "redeem" | "status";
+type CardStatus = "unused" | "used" | "disabled";
 
+type CardRecord = {
+  id: string;
+  code: string;
+  product: string;
+  status: CardStatus;
+  account?: string;
+  createdAt: string;
+  usedAt?: string;
+};
+
+const STORAGE_KEY = "cdk_cards";
 const languages = ["中", "EN", "VI", "RU", "TR"];
 
 const faqItems = [
@@ -27,15 +47,45 @@ const faqItems = [
   }
 ];
 
-function mockStatus(code: string, index = 0) {
-  const states = ["充值成功", "处理中", "等待验证", "处理失败"];
+function nowText() {
+  return new Date().toLocaleString("zh-CN", { hour12: false });
+}
+
+function readCards(): CardRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const value = window.localStorage.getItem(STORAGE_KEY);
+    return value ? JSON.parse(value) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCards(cards: CardRecord[]) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
+}
+
+function queryCard(code: string, index = 0) {
+  const cards = readCards();
+  const hit = cards.find((item) => item.code.toLowerCase() === code.toLowerCase());
+  if (hit) {
+    return {
+      code: hit.code,
+      account: hit.account || "-",
+      status: hit.status === "used" ? "充值成功" : hit.status === "disabled" ? "已禁用" : "未使用",
+      createdAt: hit.createdAt,
+      finishedAt: hit.usedAt || "-"
+    };
+  }
+
+  const states = ["未找到", "等待验证", "处理中"];
   const status = states[(code.length + index) % states.length];
   return {
     code,
-    account: status === "处理失败" ? "-" : `user${(code.length + index * 17) % 9000}@example.com`,
+    account: "-",
     status,
-    createdAt: "2026-06-19 20:18",
-    finishedAt: status === "充值成功" ? "2026-06-19 20:24" : "-"
+    createdAt: "-",
+    finishedAt: "-"
   };
 }
 
@@ -46,11 +96,11 @@ export default function Page() {
   const [redeemState, setRedeemState] = useState<RedeemState>("idle");
   const [redeemMessage, setRedeemMessage] = useState("");
   const [statusCode, setStatusCode] = useState("");
-  const [statusResult, setStatusResult] = useState<ReturnType<typeof mockStatus> | null>(null);
+  const [statusResult, setStatusResult] = useState<ReturnType<typeof queryCard> | null>(null);
   const [showBatch, setShowBatch] = useState(false);
   const [showFaq, setShowFaq] = useState(false);
   const [batchText, setBatchText] = useState("");
-  const [batchResults, setBatchResults] = useState<ReturnType<typeof mockStatus>[]>([]);
+  const [batchResults, setBatchResults] = useState<ReturnType<typeof queryCard>[]>([]);
 
   const badgeText = useMemo(() => {
     if (redeemState === "success") return "已提交";
@@ -60,27 +110,54 @@ export default function Page() {
   }, [redeemState]);
 
   function redeem() {
-    if (!cardKey.trim()) {
+    const code = cardKey.trim();
+    if (!code) {
       setRedeemState("error");
       setRedeemMessage("请输入卡密后再兑换。");
       return;
     }
+
     setRedeemState("loading");
     setRedeemMessage("正在提交兑换请求...");
+
     window.setTimeout(() => {
-      if (cardKey.toLowerCase().startsWith("xiaojiu")) {
-        setRedeemState("success");
-        setRedeemMessage("卡密已提交，系统正在安排充值。");
-      } else {
+      const cards = readCards();
+      const index = cards.findIndex((item) => item.code.toLowerCase() === code.toLowerCase());
+
+      if (index < 0) {
         setRedeemState("error");
-        setRedeemMessage("卡密格式不正确，请确认是否为 xiaojiu 开头的 Plus 代付卡密。");
+        setRedeemMessage("卡密不存在，请先在后台生成或导入。");
+        return;
       }
+
+      const card = cards[index];
+      if (card.status === "used") {
+        setRedeemState("error");
+        setRedeemMessage("这张卡密已经兑换过了。");
+        return;
+      }
+
+      if (card.status === "disabled") {
+        setRedeemState("error");
+        setRedeemMessage("这张卡密已被后台禁用。");
+        return;
+      }
+
+      cards[index] = {
+        ...card,
+        status: "used",
+        account: "self-service@example.com",
+        usedAt: nowText()
+      };
+      writeCards(cards);
+      setRedeemState("success");
+      setRedeemMessage("卡密已提交，系统正在安排充值。");
     }, 650);
   }
 
   function queryStatus() {
     if (!statusCode.trim()) return;
-    setStatusResult(mockStatus(statusCode.trim()));
+    setStatusResult(queryCard(statusCode.trim()));
   }
 
   function queryBatch() {
@@ -88,7 +165,7 @@ export default function Page() {
       .split(/\r?\n/)
       .map((item) => item.trim())
       .filter(Boolean);
-    setBatchResults(rows.map((row, index) => mockStatus(row, index)));
+    setBatchResults(rows.map((row, index) => queryCard(row, index)));
   }
 
   return (
@@ -108,6 +185,9 @@ export default function Page() {
               </button>
             ))}
           </div>
+          <a className="admin-entry" href="/admin">
+            后台
+          </a>
         </header>
 
         <section className="hero">
@@ -243,7 +323,7 @@ function StatusCard({
   item,
   compact = false
 }: {
-  item: ReturnType<typeof mockStatus>;
+  item: ReturnType<typeof queryCard>;
   compact?: boolean;
 }) {
   return (
